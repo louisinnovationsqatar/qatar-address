@@ -1,0 +1,25 @@
+{
+  "name": "@qatar-address/crawler",
+  "version": "0.1.0",
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "crawl": "tsx src/crawl.ts",
+    "export": "tsx src/export.ts",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@qatar-address/database": "workspace:*",
+    "@qatar-address/types": "workspace:*",
+    "pg": "^8.13.0",
+    "dotenv": "^16.4.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/pg": "^8.11.0",
+    "tsx": "^4.19.0",
+    "vitest": "^3.0.0"
+  }
+}
