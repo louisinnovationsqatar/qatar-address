@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(git init:*)",
+      "Bash(c:/projects/BluePlate/pnpm-workspace.yaml:*)",
+      "Bash(c:/projects/BluePlate/.gitignore:*)",
+      "Bash(c:/projects/BluePlate/.env.example:*)",
+      "Bash(c:/projects/BluePlate/LICENSE:*)",
+      "Bash(pnpm install:*)",
+      "Bash(corepack enable:*)",
+      "Bash(corepack prepare:*)",
+      "Bash(npm install:*)",
+      "Bash(COREPACK_INTEGRITY_KEYS=0 pnpm install)"
+    ]
+  }
+}
