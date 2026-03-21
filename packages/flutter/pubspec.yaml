@@ -1,0 +1,13 @@
+name: qatar_address_flutter
+description: Flutter widget for Qatar National Address System blue plate picker
+version: 0.1.0
+
+environment:
+  sdk: ">=3.0.0 <4.0.0"
+  flutter: ">=3.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  qatar_address:
+    path: ../dart-sdk
