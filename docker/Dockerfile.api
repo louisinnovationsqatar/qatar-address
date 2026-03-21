@@ -1,0 +1,40 @@
+FROM node:20-slim AS builder
+WORKDIR /app
+RUN corepack enable pnpm
+
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml turbo.json tsconfig.base.json ./
+COPY packages/types/package.json packages/types/
+COPY packages/database/package.json packages/database/
+COPY packages/api/package.json packages/api/
+COPY packages/crawler/package.json packages/crawler/
+
+RUN pnpm install --frozen-lockfile
+
+COPY packages/types/ packages/types/
+COPY packages/database/ packages/database/
+COPY packages/api/ packages/api/
+COPY packages/crawler/ packages/crawler/
+
+RUN pnpm build
+
+FROM node:20-slim
+WORKDIR /app
+RUN corepack enable pnpm
+
+COPY --from=builder /app/package.json /app/pnpm-workspace.yaml /app/pnpm-lock.yaml ./
+COPY --from=builder /app/packages/types/package.json packages/types/
+COPY --from=builder /app/packages/types/dist packages/types/dist/
+COPY --from=builder /app/packages/database/package.json packages/database/
+COPY --from=builder /app/packages/database/dist packages/database/dist/
+COPY --from=builder /app/packages/api/package.json packages/api/
+COPY --from=builder /app/packages/api/dist packages/api/dist/
+COPY --from=builder /app/packages/crawler/package.json packages/crawler/
+COPY --from=builder /app/packages/crawler/dist packages/crawler/dist/
+
+COPY --from=builder /app/packages/database/src/migrations packages/database/src/migrations/
+COPY --from=builder /app/packages/database/src/seeds packages/database/src/seeds/
+
+RUN pnpm install --prod --frozen-lockfile
+
+EXPOSE 3000
+CMD ["node", "packages/api/dist/app.js"]
