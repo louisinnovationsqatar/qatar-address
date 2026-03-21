@@ -37,9 +37,9 @@ export default async function reverseRoutes(fastify: FastifyInstance) {
         `SELECT
            z.zone_number, z.zone_name, z.zone_name_ar,
            s.street_number, s.street_name, s.street_name_ar,
-           b.building_number, b.latitude, b.longitude,
+           b.building_number, ST_Y(b.location) AS latitude, ST_X(b.location) AS longitude,
            ST_Distance(
-             ST_SetSRID(ST_MakePoint(b.longitude, b.latitude), 4326)::geography,
+             b.location::geography,
              ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography
            ) AS distance_meters
          FROM buildings b
@@ -47,7 +47,7 @@ export default async function reverseRoutes(fastify: FastifyInstance) {
          JOIN zones z ON z.id = s.zone_id
          WHERE z.is_active = true AND s.is_active = true
            AND ST_DWithin(
-             ST_SetSRID(ST_MakePoint(b.longitude, b.latitude), 4326)::geography,
+             b.location::geography,
              ST_SetSRID(ST_MakePoint($2, $1), 4326)::geography,
              $3
            )

@@ -2,8 +2,11 @@
  * Crawl orchestrator — entry point for `pnpm crawl`.
  *
  * Reads QNAS_API_TOKEN / QNAS_API_DOMAIN from the environment, creates a
- * connection pool, rate limiter (55 req/min, 950 req/day), and runs the
- * six crawl phases in order: zones -> streets -> buildings.
+ * connection pool, rate limiter, and runs the crawl phases in order:
+ *   zones (list + polygons) -> streets (list + polygons) -> buildings (list with coords).
+ *
+ * Buildings phase gets coordinates directly from get_buildings — no need for
+ * per-building get_location calls (saves ~100k+ API requests).
  */
 
 import dotenv from 'dotenv';
@@ -40,12 +43,19 @@ async function main(): Promise<void> {
     connectionTimeoutMillis: 5_000,
   });
 
-  const client = new QnasClient({ token, domain });
-  const limiter = new RateLimiter({ perMinute: 55, perDay: 950 });
+  const client = new QnasClient({
+    token,
+    domain,
+    baseUrl: process.env.QNAS_BASE_URL || 'https://qnas.qa',
+  });
+
+  // 1 request per 1.8 seconds = ~33/min (safely under QNAS IP limit of 36/min)
+  const limiter = new RateLimiter();
 
   const startTime = Date.now();
   console.log('=== Qatar Address Crawler ===');
   console.log(`Started at ${new Date().toISOString()}`);
+  console.log(`Rate: ~33 req/min (1 per 1.8s)`);
   console.log();
 
   try {
@@ -59,18 +69,18 @@ async function main(): Promise<void> {
       );
     }
 
-    // Phase 1 + 2: Zones
+    // Phase 1 + 2: Zones (list + polygons)
     console.log('--- Zones (Phase 1 + 2) ---');
     const zoneStats = await crawlZones(pool, client, limiter);
     console.log();
 
-    // Phase 3 + 4: Streets
+    // Phase 3 + 4: Streets (list + polygons)
     console.log('--- Streets (Phase 3 + 4) ---');
     const streetStats = await crawlStreets(pool, client, limiter);
     console.log();
 
-    // Phase 5 + 6: Buildings
-    console.log('--- Buildings (Phase 5 + 6) ---');
+    // Phase 5: Buildings (list with coordinates)
+    console.log('--- Buildings (Phase 5) ---');
     const buildingStats = await crawlBuildings(pool, client, limiter);
     console.log();
 
@@ -82,8 +92,7 @@ async function main(): Promise<void> {
     console.log(`Streets upserted:    ${streetStats.streetsUpserted}`);
     console.log(`Street polygons:     ${streetStats.polygonsFetched}`);
     console.log(`Buildings inserted:  ${buildingStats.buildingsInserted}`);
-    console.log(`Building locations:  ${buildingStats.locationsFetched}`);
-    console.log(`Daily API calls:     ${limiter.dailyCount}`);
+    console.log(`Total API calls:     ${limiter.dailyCount}`);
     console.log(`Elapsed:             ${elapsed}s`);
   } catch (err) {
     console.error('Crawl failed with error:', err);

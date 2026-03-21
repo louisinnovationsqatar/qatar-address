@@ -3,10 +3,11 @@ import type { QnasClient } from '../qnas-client.js';
 import type { RateLimiter } from '../rate-limiter.js';
 
 /**
- * Phase 5 + 6 — Crawl buildings and their exact coordinates.
+ * Phase 5 — Crawl buildings with coordinates in a single pass.
  *
- * - Phase 5: `getBuildings(zone, street)` -> insert with placeholder (0,0).
- * - Phase 6: `getLocation(zone, street, building)` -> update exact coordinates.
+ * The QNAS `/get_buildings/{zone}/{street}` endpoint returns buildings WITH
+ * their lat/lng coordinates (x=lat, y=lng). This eliminates the need for
+ * per-building `/get_location` calls, saving ~100k+ API requests.
  *
  * Skips items already recorded as successful in `crawl_log`.
  */
@@ -14,11 +15,8 @@ export async function crawlBuildings(
   pool: pg.Pool,
   client: QnasClient,
   limiter: RateLimiter,
-): Promise<{ buildingsInserted: number; locationsFetched: number }> {
+): Promise<{ buildingsInserted: number }> {
   let buildingsInserted = 0;
-  let locationsFetched = 0;
-
-  // ---- Phase 5: building lists per zone/street ----
 
   const allStreets = await pool.query(
     `SELECT s.id AS street_id, s.street_number, z.zone_number
@@ -26,6 +24,9 @@ export async function crawlBuildings(
      JOIN zones z ON z.id = s.zone_id
      ORDER BY z.zone_number, s.street_number`,
   );
+
+  const totalStreets = allStreets.rows.length;
+  let processedStreets = 0;
 
   for (const streetRow of allStreets.rows) {
     const zoneNum: number = streetRow.zone_number;
@@ -41,25 +42,32 @@ export async function crawlBuildings(
        LIMIT 1`,
       [zoneNum, streetNum],
     );
-    if ((already.rowCount ?? 0) > 0) continue;
-
-    const allowed = await limiter.acquire();
-    if (!allowed) {
-      console.log(
-        `[buildings] Daily rate limit reached at building list zone=${zoneNum} street=${streetNum}`,
-      );
-      return { buildingsInserted, locationsFetched };
+    if ((already.rowCount ?? 0) > 0) {
+      processedStreets++;
+      continue;
     }
+
+    await limiter.acquire();
 
     try {
       const buildings = await client.getBuildings(zoneNum, streetNum);
 
       for (const b of buildings) {
+        const buildingNum = parseInt(b.building_number, 10);
+        const lat = parseFloat(b.x);
+        const lng = parseFloat(b.y);
+
+        if (isNaN(buildingNum) || isNaN(lat) || isNaN(lng)) continue;
+
+        // Insert with real coordinates directly — no Phase 6 needed
         await pool.query(
-          `INSERT INTO buildings (street_id, building_number, location, source)
-           VALUES ($1, $2, ST_SetSRID(ST_MakePoint(0, 0), 4326), 'QNAS_API')
-           ON CONFLICT (street_id, building_number) DO NOTHING`,
-          [streetId, b.building],
+          `INSERT INTO buildings (street_id, building_number, location, source, verified)
+           VALUES ($1, $2, ST_SetSRID(ST_MakePoint($3, $4), 4326), 'QNAS_API', true)
+           ON CONFLICT (street_id, building_number)
+           DO UPDATE SET location = ST_SetSRID(ST_MakePoint($3, $4), 4326),
+                         source = 'QNAS_API',
+                         verified = true`,
+          [streetId, buildingNum, lng, lat],
         );
         buildingsInserted++;
       }
@@ -73,9 +81,13 @@ export async function crawlBuildings(
         'success',
         { count: buildings.length },
       );
-      console.log(
-        `[buildings] Phase 5: zone=${zoneNum} street=${streetNum} — ${buildings.length} buildings`,
-      );
+
+      processedStreets++;
+      if (processedStreets % 50 === 0 || buildings.length > 0) {
+        console.log(
+          `[buildings] zone=${zoneNum} street=${streetNum} — ${buildings.length} buildings (${processedStreets}/${totalStreets} streets)`,
+        );
+      }
     } catch (err) {
       await logCrawl(
         pool,
@@ -87,90 +99,16 @@ export async function crawlBuildings(
         { error: String(err) },
       );
       console.error(
-        `[buildings] Failed to fetch buildings for zone=${zoneNum} street=${streetNum}:`,
-        err,
-      );
-    }
-  }
-
-  // ---- Phase 6: exact coordinates per building ----
-
-  const unlocated = await pool.query(
-    `SELECT b.id, b.building_number, s.street_number, z.zone_number
-     FROM buildings b
-     JOIN streets s ON s.id = b.street_id
-     JOIN zones z ON z.id = s.zone_id
-     WHERE ST_X(b.location) = 0 AND ST_Y(b.location) = 0
-     ORDER BY z.zone_number, s.street_number, b.building_number`,
-  );
-
-  for (const bRow of unlocated.rows) {
-    const zoneNum: number = bRow.zone_number;
-    const streetNum: number = bRow.street_number;
-    const buildingNum: number = bRow.building_number;
-    const buildingId: number = bRow.id;
-
-    const already = await pool.query(
-      `SELECT 1 FROM crawl_log
-       WHERE endpoint = 'building_location'
-         AND zone_number = $1
-         AND street_number = $2
-         AND building_number = $3
-         AND status = 'success'
-       LIMIT 1`,
-      [zoneNum, streetNum, buildingNum],
-    );
-    if ((already.rowCount ?? 0) > 0) continue;
-
-    const allowed = await limiter.acquire();
-    if (!allowed) {
-      console.log(
-        `[buildings] Daily rate limit reached at location zone=${zoneNum} street=${streetNum} building=${buildingNum}`,
-      );
-      break;
-    }
-
-    try {
-      const loc = await client.getLocation(zoneNum, streetNum, buildingNum);
-
-      await pool.query(
-        `UPDATE buildings
-         SET location = ST_SetSRID(ST_MakePoint($1, $2), 4326)
-         WHERE id = $3`,
-        [loc.lng, loc.lat, buildingId],
-      );
-
-      await logCrawl(
-        pool,
-        'building_location',
-        zoneNum,
-        streetNum,
-        buildingNum,
-        'success',
-        { lat: loc.lat, lng: loc.lng },
-      );
-      locationsFetched++;
-    } catch (err) {
-      await logCrawl(
-        pool,
-        'building_location',
-        zoneNum,
-        streetNum,
-        buildingNum,
-        'error',
-        { error: String(err) },
-      );
-      console.error(
-        `[buildings] Failed to fetch location for zone=${zoneNum} street=${streetNum} building=${buildingNum}:`,
+        `[buildings] Failed for zone=${zoneNum} street=${streetNum}:`,
         err,
       );
     }
   }
 
   console.log(
-    `[buildings] Complete: ${buildingsInserted} buildings inserted, ${locationsFetched} locations fetched`,
+    `[buildings] Complete: ${buildingsInserted} buildings inserted with coordinates`,
   );
-  return { buildingsInserted, locationsFetched };
+  return { buildingsInserted };
 }
 
 // ---- helper ----

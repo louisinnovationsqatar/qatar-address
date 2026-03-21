@@ -52,7 +52,7 @@ export default async function buildingRoutes(fastify: FastifyInstance) {
           [streetId]
         ),
         fastify.pg.query(
-          `SELECT building_number, latitude, longitude, source, verified
+          `SELECT building_number, ST_Y(location) AS latitude, ST_X(location) AS longitude, source, verified
            FROM buildings WHERE street_id = $1
            ORDER BY building_number
            LIMIT $2 OFFSET $3`,

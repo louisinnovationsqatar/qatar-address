@@ -1,21 +1,20 @@
 /**
- * Token-bucket rate limiter with per-minute and per-day limits.
+ * Rate limiter matching QNAS API limits:
+ * - IP-level: 3 requests every 5 seconds
+ * - Token-level: 60 requests per minute
  *
- * - Enforces a minimum interval between requests derived from `perMinute`.
- * - Tracks a daily counter that resets at midnight (local time).
- * - `acquire()` resolves to `true` when the request is allowed (after waiting
- *   for the per-minute interval), or `false` when the daily cap has been hit.
+ * We enforce 1 request per 1.8 seconds (33/min) to stay safely under both limits.
+ * Tracks a daily counter for logging purposes (no hard daily cap).
  */
 export class RateLimiter {
   private readonly minIntervalMs: number;
-  private readonly perDay: number;
   private _dailyCount = 0;
   private lastRequestTime = 0;
   private currentDay: number;
 
-  constructor(opts: { perMinute: number; perDay: number }) {
-    this.minIntervalMs = 60_000 / opts.perMinute;
-    this.perDay = opts.perDay;
+  constructor(opts?: { minIntervalMs?: number }) {
+    // Default: 1 request per 1.8 seconds = ~33/min (safely under 36/min IP limit)
+    this.minIntervalMs = opts?.minIntervalMs ?? 1800;
     this.currentDay = this.todayOrdinal();
   }
 
@@ -35,16 +34,11 @@ export class RateLimiter {
   }
 
   /**
-   * Wait for the per-minute interval and then try to consume a token.
-   * Returns `true` if the request is allowed, `false` if the daily limit
-   * has been reached.
+   * Wait for the minimum interval between requests, then allow.
+   * Always returns true (no daily cap — QNAS doesn't enforce one via the API).
    */
   async acquire(): Promise<boolean> {
     this.checkDayReset();
-
-    if (this._dailyCount >= this.perDay) {
-      return false;
-    }
 
     const now = Date.now();
     const elapsed = now - this.lastRequestTime;
@@ -52,13 +46,6 @@ export class RateLimiter {
     if (elapsed < this.minIntervalMs) {
       const waitMs = this.minIntervalMs - elapsed;
       await this.sleep(waitMs);
-    }
-
-    // Re-check after sleeping — another caller could theoretically have
-    // consumed the last token while we were waiting.
-    this.checkDayReset();
-    if (this._dailyCount >= this.perDay) {
-      return false;
     }
 
     this.lastRequestTime = Date.now();
@@ -70,7 +57,6 @@ export class RateLimiter {
 
   private todayOrdinal(): number {
     const d = new Date();
-    // Year * 1000 + day-of-year gives a unique integer per calendar day.
     const start = new Date(d.getFullYear(), 0, 0);
     const diff = d.getTime() - start.getTime();
     const oneDay = 86_400_000;

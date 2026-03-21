@@ -49,7 +49,7 @@ export default async function locateRoutes(fastify: FastifyInstance) {
         `SELECT
            z.zone_number, z.zone_name, z.zone_name_ar,
            s.street_number, s.street_name, s.street_name_ar,
-           b.building_number, b.latitude, b.longitude,
+           b.building_number, ST_Y(b.location) AS latitude, ST_X(b.location) AS longitude,
            b.source, b.verified
          FROM buildings b
          JOIN streets s ON s.id = b.street_id

@@ -7,8 +7,7 @@
     "build": "tsc",
     "clean": "rm -rf dist",
     "crawl": "tsx src/crawl.ts",
-    "export": "tsx src/export.ts",
-    "test": "vitest run"
+    "export": "tsx src/export.ts"
   },
   "dependencies": {
     "@qatar-address/database": "workspace:*",

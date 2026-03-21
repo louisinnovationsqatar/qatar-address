@@ -1,12 +1,12 @@
 import type pg from 'pg';
-import type { QnasClient } from '../qnas-client.js';
+import { QnasClient } from '../qnas-client.js';
 import type { RateLimiter } from '../rate-limiter.js';
 
 /**
  * Phase 1 + 2 — Crawl all zones and their polygon boundaries.
  *
  * - Phase 1: `getZones()` -> upsert zone rows.
- * - Phase 2: `getZonePolygon(zone)` -> update `boundary` + compute `centroid`.
+ * - Phase 2: `getZonePolygon(zone)` -> convert to GeoJSON, update `boundary` + compute `centroid`.
  *
  * Already-crawled items (recorded in `crawl_log`) are skipped for resumability.
  */
@@ -25,16 +25,24 @@ export async function crawlZones(
   );
 
   if (alreadyFetchedList.rowCount === 0) {
-    const allowed = await limiter.acquire();
-    if (!allowed) {
-      console.log('[zones] Daily rate limit reached before fetching zone list');
-      return { zonesUpserted, polygonsFetched };
-    }
+    await limiter.acquire();
 
     try {
       const zones = await client.getZones();
 
+      // Deduplicate zones (QNAS returns multiple entries per zone_number for sub-areas)
+      const uniqueZones = new Map<number, { name_en: string; name_ar: string }>();
       for (const z of zones) {
+        if (z.zone_number === 0) continue; // Skip zone 0 (unnamed areas)
+        if (!uniqueZones.has(z.zone_number)) {
+          uniqueZones.set(z.zone_number, {
+            name_en: z.zone_name_en,
+            name_ar: z.zone_name_ar,
+          });
+        }
+      }
+
+      for (const [zoneNum, z] of uniqueZones) {
         await pool.query(
           `INSERT INTO zones (zone_number, zone_name, zone_name_ar, source)
            VALUES ($1, $2, $3, 'QNAS_API')
@@ -42,15 +50,18 @@ export async function crawlZones(
            DO UPDATE SET zone_name = EXCLUDED.zone_name,
                          zone_name_ar = EXCLUDED.zone_name_ar,
                          source = 'QNAS_API'`,
-          [z.zone, z.name_en, z.name_ar],
+          [zoneNum, z.name_en, z.name_ar],
         );
         zonesUpserted++;
       }
 
       await logCrawl(pool, 'zones_list', null, null, null, 'success', {
-        count: zones.length,
+        rawCount: zones.length,
+        uniqueCount: uniqueZones.size,
       });
-      console.log(`[zones] Phase 1 complete: ${zonesUpserted} zones upserted`);
+      console.log(
+        `[zones] Phase 1 complete: ${zonesUpserted} zones upserted (${zones.length} raw entries)`,
+      );
     } catch (err) {
       await logCrawl(pool, 'zones_list', null, null, null, 'error', {
         error: String(err),
@@ -78,35 +89,40 @@ export async function crawlZones(
     );
     if ((already.rowCount ?? 0) > 0) continue;
 
-    const allowed = await limiter.acquire();
-    if (!allowed) {
-      console.log(
-        `[zones] Daily rate limit reached at zone polygon ${zoneNum}`,
-      );
-      break;
-    }
+    await limiter.acquire();
 
     try {
-      const poly = await client.getZonePolygon(zoneNum);
-      const geojson = JSON.stringify(poly);
+      const response = await client.getZonePolygon(zoneNum);
 
-      await pool.query(
-        `UPDATE zones
-         SET boundary = ST_SetSRID(ST_GeomFromGeoJSON($1), 4326),
-             centroid = ST_Centroid(ST_SetSRID(ST_GeomFromGeoJSON($1), 4326))
-         WHERE zone_number = $2`,
-        [geojson, zoneNum],
-      );
+      if (response.polygon && response.polygon.length > 0) {
+        const geojson = JSON.stringify(
+          QnasClient.polygonToGeoJSON(response.polygon),
+        );
+
+        await pool.query(
+          `UPDATE zones
+           SET boundary = ST_SetSRID(ST_GeomFromGeoJSON($1), 4326),
+               centroid = ST_Centroid(ST_SetSRID(ST_GeomFromGeoJSON($1), 4326))
+           WHERE zone_number = $2`,
+          [geojson, zoneNum],
+        );
+      }
 
       await logCrawl(pool, 'zone_polygon', zoneNum, null, null, 'success', {
-        type: poly.type,
+        pointCount: response.polygon?.length ?? 0,
       });
       polygonsFetched++;
+      console.log(
+        `[zones] Phase 2: zone ${zoneNum} polygon (${response.polygon?.length ?? 0} points)`,
+      );
     } catch (err) {
       await logCrawl(pool, 'zone_polygon', zoneNum, null, null, 'error', {
         error: String(err),
       });
-      console.error(`[zones] Failed to fetch polygon for zone ${zoneNum}:`, err);
+      console.error(
+        `[zones] Failed to fetch polygon for zone ${zoneNum}:`,
+        err,
+      );
     }
   }
 

@@ -34,6 +34,7 @@ export interface SearchOptions {
 }
 
 const DEFAULT_BASE_URL = 'https://api.qataraddress.com';
+const API_PREFIX = '/api/v1';
 
 export class QatarAddress {
   private readonly baseUrl: string;
@@ -47,71 +48,71 @@ export class QatarAddress {
   /** List all zones with optional pagination. */
   async getZones(page?: number, limit?: number): Promise<PaginatedResponse<ZoneSummary>> {
     const params = this.paginationParams(page, limit);
-    return this.get<PaginatedResponse<ZoneSummary>>(`/zones${params}`);
+    return this.get<PaginatedResponse<ZoneSummary>>(`${API_PREFIX}/zones${params}`);
   }
 
   /** Get a single zone by its zone number. */
   async getZone(zone: number): Promise<ApiResponse<ZoneSummary>> {
-    return this.get<ApiResponse<ZoneSummary>>(`/zones/${zone}`);
+    return this.get<ApiResponse<ZoneSummary>>(`${API_PREFIX}/zones/${zone}`);
   }
 
   /** List streets within a zone. */
   async getStreets(zone: number, page?: number, limit?: number): Promise<PaginatedResponse<StreetSummary>> {
     const params = this.paginationParams(page, limit);
-    return this.get<PaginatedResponse<StreetSummary>>(`/zones/${zone}/streets${params}`);
+    return this.get<PaginatedResponse<StreetSummary>>(`${API_PREFIX}/zones/${zone}/streets${params}`);
   }
 
   /** List buildings on a street within a zone. */
   async getBuildings(zone: number, street: number, page?: number, limit?: number): Promise<PaginatedResponse<BuildingSummary>> {
     const params = this.paginationParams(page, limit);
-    return this.get<PaginatedResponse<BuildingSummary>>(`/zones/${zone}/streets/${street}/buildings${params}`);
+    return this.get<PaginatedResponse<BuildingSummary>>(`${API_PREFIX}/zones/${zone}/streets/${street}/buildings${params}`);
   }
 
   /** Locate a specific building by zone, street, and building number. */
   async locate(zone: number, street: number, building: number): Promise<ApiResponse<LocateResult>> {
-    return this.get<ApiResponse<LocateResult>>(`/locate/${zone}/${street}/${building}`);
+    return this.get<ApiResponse<LocateResult>>(`${API_PREFIX}/locate/${zone}/${street}/${building}`);
   }
 
   /** Validate whether an address (or partial address) exists. */
   async validate(zone: number, street?: number, building?: number): Promise<ApiResponse<ValidateResult>> {
-    let path = `/validate/${zone}`;
-    if (street !== undefined) path += `/${street}`;
-    if (building !== undefined) path += `/${building}`;
-    return this.get<ApiResponse<ValidateResult>>(path);
+    const params = new URLSearchParams({ zone: String(zone) });
+    if (street !== undefined) params.set('street', String(street));
+    if (building !== undefined) params.set('building', String(building));
+    return this.get<ApiResponse<ValidateResult>>(`${API_PREFIX}/validate?${params.toString()}`);
   }
 
   /** Search for zones and streets by name or number. */
   async search(query: string, options?: SearchOptions): Promise<ApiResponse<SearchResult[]>> {
     const params = new URLSearchParams({ q: query });
     if (options?.limit !== undefined) params.set('limit', String(options.limit));
-    return this.get<ApiResponse<SearchResult[]>>(`/search?${params.toString()}`);
+    return this.get<ApiResponse<SearchResult[]>>(`${API_PREFIX}/search?${params.toString()}`);
   }
 
   /** Reverse geocode: find the nearest address for a lat/lng coordinate. */
-  async reverse(lat: number, lng: number, radius?: number): Promise<ApiResponse<ReverseResult[]>> {
+  async reverse(lat: number, lng: number, radius?: number): Promise<ApiResponse<ReverseResult>> {
     const params = new URLSearchParams({ lat: String(lat), lng: String(lng) });
     if (radius !== undefined) params.set('radius', String(radius));
-    return this.get<ApiResponse<ReverseResult[]>>(`/reverse?${params.toString()}`);
+    return this.get<ApiResponse<ReverseResult>>(`${API_PREFIX}/reverse?${params.toString()}`);
   }
 
   /** Submit a community contribution for a new or corrected address. */
   async contribute(input: ContributeInput): Promise<ApiResponse<Contribution>> {
-    return this.post<ApiResponse<Contribution>>('/contribute', input);
+    return this.post<ApiResponse<Contribution>>(`${API_PREFIX}/contribute`, input);
   }
 
   /** Check the status of a previously submitted contribution. */
   async getContributionStatus(id: number): Promise<ApiResponse<Contribution>> {
-    return this.get<ApiResponse<Contribution>>(`/contribute/${id}`);
+    return this.get<ApiResponse<Contribution>>(`${API_PREFIX}/contributions/${id}/status`);
   }
 
   /** Get aggregate statistics about the address database. */
   async stats(): Promise<ApiResponse<StatsResult>> {
-    return this.get<ApiResponse<StatsResult>>('/stats');
+    return this.get<ApiResponse<StatsResult>>(`${API_PREFIX}/stats`);
   }
 
   /** Check API health status. */
   async health(): Promise<ApiResponse<HealthResult>> {
-    return this.get<ApiResponse<HealthResult>>('/health');
+    return this.get<ApiResponse<HealthResult>>(`${API_PREFIX}/health`);
   }
 
   // --- Private helpers ---

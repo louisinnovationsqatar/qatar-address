@@ -1,12 +1,12 @@
 import type pg from 'pg';
-import type { QnasClient } from '../qnas-client.js';
+import { QnasClient } from '../qnas-client.js';
 import type { RateLimiter } from '../rate-limiter.js';
 
 /**
  * Phase 3 + 4 — Crawl streets for every zone and their geometries.
  *
  * - Phase 3: `getStreets(zone)` -> upsert into `streets` table.
- * - Phase 4: `getStreetPolygon(zone, street)` -> update `geometry` column.
+ * - Phase 4: `getStreetPolygon(zone, street)` -> convert to GeoJSON, update `geometry` column.
  *
  * Skips items already recorded as successful in `crawl_log`.
  */
@@ -36,13 +36,7 @@ export async function crawlStreets(
     );
     if ((already.rowCount ?? 0) > 0) continue;
 
-    const allowed = await limiter.acquire();
-    if (!allowed) {
-      console.log(
-        `[streets] Daily rate limit reached at street list for zone ${zoneNum}`,
-      );
-      return { streetsUpserted, polygonsFetched };
-    }
+    await limiter.acquire();
 
     try {
       const streets = await client.getStreets(zoneNum);
@@ -55,7 +49,7 @@ export async function crawlStreets(
            DO UPDATE SET street_name = EXCLUDED.street_name,
                          street_name_ar = EXCLUDED.street_name_ar,
                          source = 'QNAS_API'`,
-          [zoneId, s.street, s.name_en, s.name_ar],
+          [zoneId, s.street_number, s.street_name_en, s.street_name_ar],
         );
         streetsUpserted++;
       }
@@ -101,24 +95,23 @@ export async function crawlStreets(
     );
     if ((already.rowCount ?? 0) > 0) continue;
 
-    const allowed = await limiter.acquire();
-    if (!allowed) {
-      console.log(
-        `[streets] Daily rate limit reached at street polygon zone=${zoneNum} street=${streetNum}`,
-      );
-      break;
-    }
+    await limiter.acquire();
 
     try {
-      const poly = await client.getStreetPolygon(zoneNum, streetNum);
-      const geojson = JSON.stringify(poly);
+      const response = await client.getStreetPolygon(zoneNum, streetNum);
 
-      await pool.query(
-        `UPDATE streets
-         SET geometry = ST_SetSRID(ST_GeomFromGeoJSON($1), 4326)
-         WHERE id = $2`,
-        [geojson, streetRow.id],
-      );
+      if (response.polygon && response.polygon.length > 0) {
+        const geojson = JSON.stringify(
+          QnasClient.polygonToGeoJSON(response.polygon),
+        );
+
+        await pool.query(
+          `UPDATE streets
+           SET geometry = ST_SetSRID(ST_GeomFromGeoJSON($1), 4326)
+           WHERE id = $2`,
+          [geojson, streetRow.id],
+        );
+      }
 
       await logCrawl(
         pool,
@@ -127,7 +120,7 @@ export async function crawlStreets(
         streetNum,
         null,
         'success',
-        { type: poly.type },
+        { pointCount: response.polygon?.length ?? 0 },
       );
       polygonsFetched++;
     } catch (err) {
